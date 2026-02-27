@@ -8,6 +8,6 @@ cd "$PROJECT_ROOT"
 
 echo "🤖 正在启动主交易智能体（A股模式）..."
 
-python main.py configs/astock_config.json  # 运行A股配置
+python3 main.py configs/astock_config.json  # 运行A股配置
 
 echo "✅ AI-Trader 已停止"

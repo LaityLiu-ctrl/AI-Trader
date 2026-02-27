@@ -8,5 +8,5 @@ cd "$PROJECT_ROOT"
 
 echo "🔧 正在启动 MCP 服务..."
 cd agent_tools
-python start_mcp_services.py
+python3 start_mcp_services.py
 cd ..

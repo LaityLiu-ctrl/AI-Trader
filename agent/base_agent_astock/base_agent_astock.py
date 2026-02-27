@@ -30,10 +30,76 @@ class DeepSeekChatOpenAI(ChatOpenAI):
     Handles the case where DeepSeek returns tool_calls.args as JSON strings instead of dicts.
     """
 
+    @staticmethod
+    def _stringify_content_for_provider(content: Any) -> str:
+        """Force message content into a plain string for provider compatibility.
+
+        Some OpenAI-compatible providers (including certain DeepSeek gateways) reject
+        non-string `content` (e.g., list of blocks). This helper flattens common
+        structured formats into a single string.
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if item is None:
+                    continue
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    txt = item.get("text")
+                    if isinstance(txt, str):
+                        parts.append(txt)
+                    else:
+                        parts.append(json.dumps(item, ensure_ascii=False))
+                else:
+                    parts.append(str(item))
+            return "\n".join(parts)
+        if isinstance(content, dict):
+            try:
+                return json.dumps(content, ensure_ascii=False)
+            except Exception:
+                return str(content)
+        return str(content)
+
     def _create_message_dicts(self, messages: list, stop: Optional[list] = None) -> list:
-        """Override to handle response parsing"""
+        """Override to ensure provider receives string `content` only."""
         message_dicts = super()._create_message_dicts(messages, stop)
+        # Ensure every message dict has string content (providers may reject list/blocks)
+        for md in message_dicts:
+            if isinstance(md, dict) and "content" in md:
+                md["content"] = self._stringify_content_for_provider(md.get("content"))
         return message_dicts
+
+    def _convert_message_to_dict(self, message: Any) -> Dict[str, Any]:
+        """Convert a LangChain message to an OpenAI-compatible dict.
+
+        Newer `langchain_openai` versions may bypass `_create_message_dicts` and call
+        `_convert_message_to_dict` directly. Some providers reject non-string content,
+        so we enforce string `content` here as the last line of defense.
+        """
+        d = super()._convert_message_to_dict(message)
+        if isinstance(d, dict) and "content" in d:
+            d["content"] = self._stringify_content_for_provider(d.get("content"))
+        return d
+
+    def _get_request_payload(self, messages: list, stop: Optional[list] = None, **kwargs) -> Dict[str, Any]:
+        """Build the final OpenAI request payload and force string message content.
+
+        This is the last line of defense: some provider gateways reject `content` when
+        it is a list/blocks. We normalize every `messages[i].content` to a plain string
+        right before sending the HTTP request.
+        """
+        payload = super()._get_request_payload(messages, stop=stop, **kwargs)
+        msgs = payload.get("messages")
+        if isinstance(msgs, list):
+            for m in msgs:
+                if isinstance(m, dict) and "content" in m:
+                    m["content"] = self._stringify_content_for_provider(m.get("content"))
+        return payload
 
     def _generate(self, messages: list, stop: Optional[list] = None, **kwargs):
         """Override generation to fix tool_calls format in responses"""
@@ -230,7 +296,7 @@ class BaseAgentAStock:
         self.tools: Optional[List] = None
         self.model: Optional[ChatOpenAI] = None
         self.agent: Optional[Any] = None
-
+        print("✅ Using LLM:", type(self.model).__name__, "basemodel:", self.basemodel)
         # Data paths
         self.data_path = os.path.join(self.base_log_path, self.signature)
         self.position_file = os.path.join(self.data_path, "position", "position.jsonl")
@@ -326,11 +392,64 @@ class BaseAgentAStock:
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
 
-    async def _ainvoke_with_retry(self, message: List[Dict[str, str]]) -> Any:
-        """Agent invocation with retry"""
+    @staticmethod
+    def _stringify_content(content: Any) -> str:
+        """Ensure message content is a plain string.
+
+        Some OpenAI-compatible endpoints (e.g., DeepSeek gateways) reject non-string
+        message content (like list/blocks). This function flattens common structured
+        content formats into a single string.
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        # OpenAI-style content blocks or any list-like content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for item in content:
+                if item is None:
+                    continue
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    # Common pattern: {"type": "text", "text": "..."}
+                    txt = item.get("text")
+                    if isinstance(txt, str):
+                        parts.append(txt)
+                    else:
+                        parts.append(json.dumps(item, ensure_ascii=False))
+                else:
+                    parts.append(str(item))
+            return "\n".join(parts)
+        # Dicts or other types
+        if isinstance(content, dict):
+            try:
+                return json.dumps(content, ensure_ascii=False)
+            except Exception:
+                return str(content)
+        return str(content)
+
+    @classmethod
+    def _sanitize_message_dicts(cls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return a sanitized copy of messages where every content is a string."""
+        sanitized: List[Dict[str, Any]] = []
+        for m in messages:
+            m2 = dict(m)
+            m2["content"] = cls._stringify_content(m2.get("content"))
+            sanitized.append(m2)
+        return sanitized
+
+    async def _ainvoke_with_retry(self, message: List[Dict[str, Any]]) -> Any:
+        """Agent invocation with retry.
+
+        NOTE: Some providers reject non-string message content. We sanitize message
+        payloads to ensure `content` is always a string.
+        """
         for attempt in range(1, self.max_retries + 1):
             try:
-                return await self.agent.ainvoke({"messages": message}, {"recursion_limit": 100})
+                safe_message = self._sanitize_message_dicts(message)
+                return await self.agent.ainvoke({"messages": safe_message}, {"recursion_limit": 100})
             except Exception as e:
                 if attempt == self.max_retries:
                     raise e

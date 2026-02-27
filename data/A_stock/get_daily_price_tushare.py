@@ -130,7 +130,8 @@ def get_daily_price_a_stock(
 
     ts.set_token(token)
     pro = ts.pro_api()
-    
+    pro._DataApi__token = token
+    pro._DataApi__http_url = 'http://lianghua.nanyangqiankun.top'
     # Set timeout for tushare API requests (increase to 120 seconds)
     if hasattr(pro, 'api') and hasattr(pro.api, 'timeout'):
         pro.api.timeout = 120
@@ -321,7 +322,8 @@ def get_index_daily_data(
 
     ts.set_token(token)
     pro = ts.pro_api()
-    
+    pro._DataApi__token = token
+    pro._DataApi__http_url = 'http://lianghua.nanyangqiankun.top'
     # Set timeout for tushare API requests (increase to 120 seconds)
     if hasattr(pro, 'api') and hasattr(pro.api, 'timeout'):
         pro.api.timeout = 120
